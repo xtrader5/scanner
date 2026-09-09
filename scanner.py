@@ -3,14 +3,25 @@ import pandas as pd
 import yfinance as yf
 import os
 
-# --- CONFIGURATION (Environment Secrets se values lega) ---
+# --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "8928957792:AAHsm3vxxwSTdhQA37Dbdcp0DniBNLWa3NQ")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5608017991")
 
-# Watchlist (Stocks + Forex Pairs)
+# Extended Watchlist (Stocks, Crypto, Commodities, Indices)
 WATCHLIST = [
-    "RELIANCE.NS", 
-    "TCS.NS", 
+    # Indian Stocks
+    "JINDALSTEL.NS", "TRENT.NS", "HDFCBANK.NS", "PNB.NS", "ADANIPORTS.NS",
+    "VOLTAS.NS", "DIXON.NS", "SOLARINDS.NS", "AMBER.NS", "CHOLAFIN.NS",
+    "UPL.NS", "ULTRACEMCO.NS", "AMBUJACEM.NS", "M&M.NS", "SBILIFE.NS",
+    "BAJFINANCE.NS", "JSWSTEEL.NS", "IRFC.NS", "RELIANCE.NS", "TCS.NS",
+    "COALINDIA.NS", "LUPIN.NS", "RTNPOWER.NS", "KPIGREEN.NS", "ADANIPOWER.NS",
+    "RPOWER.NS", "SUZLON.NS",
+    # Commodities & Crypto & Forex
+    "GC=F",          # Gold (XAUUSD)
+    "SI=F",          # Silver (XAGUSD)
+    "CL=F",          # Crude Oil
+    "NG=F",          # Natural Gas
+    "BTC-USD",       # Bitcoin
     "EURUSD=X", 
     "GBPUSD=X", 
     "USDJPY=X"
@@ -83,7 +94,7 @@ def analyze_stock(symbol):
         print(f"Error analyzing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Running single-scan cycle...")
+    print("🚀 Running extended multi-market scan cycle...")
     for symbol in WATCHLIST:
         analyze_stock(symbol)
     print("Scan completed successfully.")
