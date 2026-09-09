@@ -1,11 +1,11 @@
 import requests
 import pandas as pd
 import yfinance as yf
-import time
+import os
 
-# --- CONFIGURATION ---
-TELEGRAM_BOT_TOKEN = "8928957792:AAHsm3vxxwSTdhQA37Dbdcp0DniBNLWa3NQ"
-TELEGRAM_CHAT_ID = "5608017991"
+# --- CONFIGURATION (Environment Secrets se values lega) ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "8928957792:AAHsm3vxxwSTdhQA37Dbdcp0DniBNLWa3NQ")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5608017991")
 
 # Watchlist (Stocks + Forex Pairs)
 WATCHLIST = [
@@ -15,7 +15,6 @@ WATCHLIST = [
     "GBPUSD=X", 
     "USDJPY=X"
 ]
-CHECK_INTERVAL = 300  # 5 minutes
 
 def send_telegram_alert(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -83,14 +82,8 @@ def analyze_stock(symbol):
     except Exception as e:
         print(f"Error analyzing {symbol}: {e}")
 
-# --- MAIN LOOP ---
-print("🚀 Market, Forex & VWAP Scanner Started...")
-send_telegram_alert("✅ System Started: Scanning with EMA, RSI, ATR & VWAP...")
-
-while True:
-    print(f"\nScanning started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+if __name__ == "__main__":
+    print("🚀 Running single-scan cycle...")
     for symbol in WATCHLIST:
         analyze_stock(symbol)
-        time.sleep(1)
-    
-    time.sleep(CHECK_INTERVAL)
+    print("Scan completed successfully.")
