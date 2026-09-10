@@ -6,7 +6,9 @@ import math
 from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5608017991")
+
+# Aapki aur aapke friend ki Chat IDs yahan list mein hain
+TELEGRAM_CHAT_IDS = ["5608017991", "5643531288"]
 
 WATCHLIST = [
     "GC=F", "SI=F",                  # Gold & Silver
@@ -19,15 +21,16 @@ WATCHLIST = [
 
 def send_telegram_alert(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+    for chat_id in TELEGRAM_CHAT_IDS:
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            requests.post(url, json=payload)
+        except Exception as e:
+            print(f"Telegram Error for {chat_id}: {e}")
 
 def get_atm_strike(symbol, price):
     if symbol == "^NSEI":  
@@ -53,21 +56,17 @@ def analyze_stock(symbol):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # Prevent duplicate alerts by ensuring the signal is from the absolute latest candle
         last_candle_time = df.index[-1]
         now_utc = datetime.now(timezone.utc)
         
-        # Convert pandas timestamp to UTC for comparison if timezone aware
         if hasattr(last_candle_time, 'tzinfo') and last_candle_time.tzinfo:
             time_diff = (now_utc - last_candle_time).total_seconds() / 60
         else:
-            time_diff = 30 # fallback if naive
+            time_diff = 30
 
-        # If the latest candle is older than 45 minutes, ignore it to prevent old triggers
         if time_diff > 45:
             return
 
-        # Technical Indicators
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
@@ -88,7 +87,7 @@ def analyze_stock(symbol):
 
         curr = df.iloc[-1]
         prev = df.iloc[-2]
-        prev2 = df.iloc[-3] # To check if signal already fired on previous bar
+        prev2 = df.iloc[-3]
 
         bull_crossover = (prev['EMA20'] <= prev['EMA50']) and (curr['EMA20'] > curr['EMA50'])
         bull_momentum = (curr['RSI'] > 50) and (curr['RSI'] < 75)
@@ -101,7 +100,6 @@ def analyze_stock(symbol):
         bear_momentum = (curr['RSI'] < 50) and (curr['RSI'] > 25)
         bear_trend = curr['Close'] < curr['VWAP']
 
-        # Prevent re-triggering if the previous bar also triggered the exact same crossover setup
         was_bull_previously = (prev2['EMA20'] <= prev2['EMA50']) and (prev['EMA20'] > prev['EMA50'])
         was_bear_previously = (prev2['EMA20'] >= prev2['EMA50']) and (prev['EMA20'] < prev['EMA50'])
 
@@ -117,7 +115,6 @@ def analyze_stock(symbol):
         elif symbol == "^BSESN": display_name = "SENSEX"
         elif symbol == "^CNXFIN": display_name = "FINNIFTY"
 
-        # --- BUY SIGNAL (Only trigger on fresh crossover/blast, not repetitive bars) ---
         if ((bull_crossover and bull_momentum and bull_trend and not was_bull_previously) or 
             (is_gamma_blast and bull_trend) or 
             (symbol in ["GC=F", "SI=F"] and bull_crossover and not was_bull_previously)):
@@ -149,7 +146,6 @@ def analyze_stock(symbol):
             print(msg)
             send_telegram_alert(msg)
 
-        # --- SELL SIGNAL ---
         elif ((bear_crossover and bear_momentum and bear_trend and not was_bear_previously) or 
               (symbol in ["GC=F", "SI=F"] and bear_crossover and not was_bear_previously)):
             
