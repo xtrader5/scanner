@@ -6,16 +6,15 @@ import math
 from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_IDS = ["5608017991", "1856754382"]  # Apni aur friend ki ID yahan hain
+TELEGRAM_CHAT_IDS = ["5608017991", "1856754382"]
 
-# Watchlist (XAG/USD removed, Gold & all major indices/stocks included)
+# Watchlist (XAG/USD removed, Gold, Crude, Crypto & Indices/Stocks included)
 WATCHLIST = [
-    "GC=F",                              # Gold (XAU/USD)
-    "^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN", # Indian Indices
+    "GC=F", "CL=F", "NG=F", "BTC-USD",
+    "^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN",
     "JINDALSTEL.NS", "TRENT.NS", "HDFCBANK.NS", "PNB.NS", "ADANIPORTS.NS",
     "VOLTAS.NS", "DIXON.NS", "CHOLAFIN.NS", "RELIANCE.NS", "TCS.NS",
-    "BAJFINANCE.NS", "JSWSTEEL.NS", "SUZLON.NS", "RPOWER.NS",
-    "CL=F", "NG=F", "BTC-USD"
+    "BAJFINANCE.NS", "JSWSTEEL.NS", "SUZLON.NS", "RPOWER.NS"
 ]
 
 def send_telegram_alert(message):
@@ -48,61 +47,25 @@ def get_atm_strike(symbol, price):
 
 def analyze_stock(symbol):
     try:
-        # Fetching 15m data for multi-timeframe analysis
-        df = yf.download(symbol, period="5d", interval="15m", progress=False)
-        if df.empty or len(df) < 60:
+        df = yf.download(symbol, period="3d", interval="15m", progress=False)
+        if df.empty or len(df) < 50:
             return
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # Fresh candle check (anti-spam)
+        # STRICT FRESH CANDLE CHECK (Only process if last candle is within 25 minutes)
         last_candle_time = df.index[-1]
         now_utc = datetime.now(timezone.utc)
         if hasattr(last_candle_time, 'tzinfo') and last_candle_time.tzinfo:
             time_diff = (now_utc - last_candle_time).total_seconds() / 60
         else:
-            time_diff = 30
+            time_diff = 20
 
-        if time_diff > 45:
+        if time_diff > 25:
             return
 
-        # Resample to higher timeframes (1H and 4H) for SMC Structure
-        df_1h = df.resample('1h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-        df_4h = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-
-        if len(df_1h) < 20 or len(df_4h) < 10:
-            return
-
-        # --- SMC & PRICE ACTION METRICS ---
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        prev2 = df.iloc[-3]
-
-        # 1. Previous Day High / Low (PDH / PDL) approximation from daily range
-        daily_df = df.resample('1D').agg({'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
-        pdh = daily_df['High'].iloc[-2] if len(daily_df) >= 2 else curr['High']
-        pdl = daily_df['Low'].iloc[-2] if len(daily_df) >= 2 else curr['Low']
-
-        # 2. Fibonacci Golden Pocket (0.618 retracement of recent 20-candle swing)
-        swing_high = df['High'].tail(20).max()
-        swing_low = df['Low'].tail(20).min()
-        fib_zone_high = swing_high - (swing_high - swing_low) * 0.618
-        fib_zone_low = swing_high - (swing_high - swing_low) * 0.786
-
-        # 3. Liquidity Sweep Detection (Wick beyond recent high/low followed by reversal)
-        recent_high = df['High'].iloc[-10:-1].max()
-        recent_low = df['Low'].iloc[-10:-1].min()
-        bullish_liquidity_sweep = (curr['Low'] < recent_low) and (curr['Close'] > recent_low) # Swept lows and rejected
-        bearish_liquidity_sweep = (curr['High'] > recent_high) and (curr['Close'] < recent_high) # Swept highs and rejected
-
-        # 4. Support & Resistance Reversal
-        support_level = df['Low'].tail(30).min()
-        resistance_level = df['High'].tail(30).max()
-        at_support = abs(curr['Close'] - support_level) / support_level < 0.003
-        at_resistance = abs(curr['Close'] - resistance_level) / resistance_level < 0.003
-
-        # 5. Technical Indicators (EMA, RSI, ATR, VWAP)
+        # Technical & SMC Indicators
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
@@ -123,62 +86,47 @@ def analyze_stock(symbol):
         curr = df.iloc[-1]
         prev = df.iloc[-2]
 
-        bull_trend = curr['Close'] > curr['VWAP'] and curr['EMA20'] > curr['EMA50']
-        bear_trend = curr['Close'] < curr['VWAP'] and curr['EMA20'] < curr['EMA50']
-        is_gamma_blast = (curr['Volume'] > (curr['Vol_SMA'] * 2.0)) and ((curr['High'] - curr['Low']) > (curr['ATR'] * 1.4))
+        # Daily levels for PDH / PDL
+        daily_df = df.resample('1D').agg({'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
+        pdh = daily_df['High'].iloc[-2] if len(daily_df) >= 2 else curr['High']
+        pdl = daily_df['Low'].iloc[-2] if len(daily_df) >= 2 else curr['Low']
+
+        # Swing levels & Sweeps
+        recent_high = df['High'].iloc[-8:-1].max()
+        recent_low = df['Low'].iloc[-8:-1].min()
+        bullish_sweep = (curr['Low'] < recent_low) and (curr['Close'] > recent_low)
+        bearish_sweep = (curr['High'] > recent_high) and (curr['Close'] < recent_high)
 
         price = round(float(curr['Close']), 2)
         atr_val = float(curr['ATR'])
         rsi_val = round(float(curr['RSI']), 2)
 
-        # Friendly display names
+        bull_trend = curr['Close'] > curr['VWAP'] and curr['EMA20'] > curr['EMA50']
+        bear_trend = curr['Close'] < curr['VWAP'] and curr['EMA20'] < curr['EMA50']
+
         display_name = symbol
         if symbol == "GC=F": display_name = "XAU/USD (Gold)"
+        elif symbol == "CL=F": display_name = "CRUDE OIL (CL=F)"
         elif symbol == "^NSEI": display_name = "NIFTY 50"
         elif symbol == "^NSEBANK": display_name = "BANK NIFTY"
         elif symbol == "^BSESN": display_name = "SENSEX"
         elif symbol == "^CNXFIN": display_name = "FINNIFTY"
 
-        # --- BUY / CALL SETUP (SMC Reversal, Liquidity Sweep at Support / Fib Zone) ---
-        is_buy_setup = (
-            (bull_trend and curr['EMA20'] > prev['EMA20']) or 
-            bullish_liquidity_sweep or 
-            (at_support and rsi_val < 40) or 
-            (fib_zone_low <= price <= fib_zone_high and bull_trend) or
-            (is_gamma_blast and bull_trend)
-        )
+        # Crossover trigger check (Ensures it ONLY triggers on the exact bar of crossover, never repeats)
+        bull_crossover_bar = (prev['EMA20'] <= prev['EMA50']) and (curr['EMA20'] > curr['EMA50'])
+        bear_crossover_bar = (prev['EMA20'] >= prev['EMA50']) and (curr['EMA20'] < curr['EMA50'])
 
-        # --- SELL / PUT SETUP (SMC Reversal, Liquidity Sweep at Resistance / PDH) ---
-        is_sell_setup = (
-            (bear_trend and curr['EMA20'] < prev['EMA20']) or 
-            bearish_liquidity_sweep or 
-            (at_resistance and rsi_val > 60) or 
-            (price >= pdh and bear_trend) or
-            (is_gamma_blast and bear_trend)
-        )
-
-        # Avoid duplicate firing using prev2 check
-        was_buy_previously = (df.iloc[-2]['Close'] > df.iloc[-2]['EMA20']) and (df.iloc[-3]['Close'] <= df.iloc[-3]['EMA20'])
-        was_sell_previously = (df.iloc[-2]['Close'] < df.iloc[-2]['EMA20']) and (df.iloc[-3]['Close'] >= df.iloc[-3]['EMA20'])
-
-        if is_buy_setup and not was_buy_previously:
+        if bull_crossover_bar or bullish_sweep:
             sl = round(float(price - (atr_val * 1.5)), 2)
             tp1 = round(float(price + (atr_val * 1.5)), 2)
             tp2 = round(float(price + (atr_val * 3.0)), 2)
             tp3 = round(float(price + (atr_val * 4.5)), 2)
             
-            reason = "🚀 [SMC BUY / LIQUIDITY SWEEP REVERSAL]"
-            if bullish_liquidity_sweep: reason = "⚡ [LOW LIQUIDITY SWEEP & REVERSAL]"
-            elif at_support: reason = "🛡️ [SUPPORT BOUNCE SETUP]"
-            elif fib_zone_low <= price <= fib_zone_high: reason = "🎯 [FIBONACCI GOLDEN ZONE BUY]"
-
-            option_info = ""
-            if symbol in ["^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN"]:
-                atm_strike = get_atm_strike(symbol, price)
-                option_info = f"\n💡 **Zero-to-Hero Option:** `{atm_strike} CE`"
+            tag = "⚡ [LATEST LIQUIDITY SWEEP & BUY REVERSAL]" if bullish_sweep else "🚀 [FRESH TREND CROSSOVER BUY]"
+            option_info = f"\n💡 **Zero-to-Hero Option:** `{get_atm_strike(symbol, price)} CE`" if symbol in ["^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN"] else ""
 
             msg = (
-                f"{reason}\n"
+                f"{tag}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📌 **Asset:** `{display_name}`{option_info}\n"
                 f"💵 **Entry Price:** `{price}`\n"
@@ -192,24 +140,17 @@ def analyze_stock(symbol):
             print(msg)
             send_telegram_alert(msg)
 
-        elif is_sell_setup and not was_sell_previously:
+        elif bear_crossover_bar or bearish_sweep:
             sl = round(float(price + (atr_val * 1.5)), 2)
             tp1 = round(float(price - (atr_val * 1.5)), 2)
             tp2 = round(float(price - (atr_val * 3.0)), 2)
             tp3 = round(float(price - (atr_val * 4.5)), 2)
             
-            reason = "🔻 [SMC SELL / RESISTANCE REJECTION]"
-            if bearish_liquidity_sweep: reason = "⚡ [HIGH LIQUIDITY SWEEP & DUMP]"
-            elif at_resistance: reason = "🧱 [RESISTANCE REJECTION SETUP]"
-            elif price >= pdh: reason = "🛑 [PREVIOUS DAY HIGH (PDH) REVERSAL]"
-
-            option_info = ""
-            if symbol in ["^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN"]:
-                atm_strike = get_atm_strike(symbol, price)
-                option_info = f"\n💡 **Zero-to-Hero Option:** `{atm_strike} PE`"
+            tag = "⚡ [LATEST LIQUIDITY SWEEP & SELL REJECTION]" if bearish_sweep else "🔻 [FRESH TREND CROSSOVER SELL]"
+            option_info = f"\n💡 **Zero-to-Hero Option:** `{get_atm_strike(symbol, price)} PE`" if symbol in ["^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN"] else ""
 
             msg = (
-                f"{reason}\n"
+                f"{tag}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📌 **Asset:** `{display_name}`{option_info}\n"
                 f"💵 **Entry Price:** `{price}`\n"
@@ -227,7 +168,7 @@ def analyze_stock(symbol):
         print(f"Error analyzing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Running Ultimate SMC & Multi-Timeframe Scanner...")
+    print("🚀 Running Strict Fresh-Only Trade Scanner...")
     for symbol in WATCHLIST:
         analyze_stock(symbol)
-    print("Scan cycle completed successfully.")
+    print("Scan cycle completed.")
