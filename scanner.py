@@ -3,21 +3,14 @@ import pandas as pd
 import yfinance as yf
 import os
 import math
+from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5608017991")
 
-# Complete Watchlist: Gold, Silver, Indices (Nifty, BankNifty, Sensex, FinNifty), Stocks & Crypto
 WATCHLIST = [
-    # Precious Metals / Commodities
-    "GC=F",              # Gold (XAU/USD)
-    "SI=F",              # Silver (XAG/USD)
-    # Indian Indices (Spot for Option ATM & Gamma Blast)
-    "^NSEI",             # Nifty 50
-    "^NSEBANK",          # Bank Nifty
-    "^BSESN",            # Sensex
-    "^CNXFIN",           # FinNifty
-    # High Momentum Stocks & Assets
+    "GC=F", "SI=F",                  # Gold & Silver
+    "^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN", # Indices
     "JINDALSTEL.NS", "TRENT.NS", "HDFCBANK.NS", "PNB.NS", "ADANIPORTS.NS",
     "VOLTAS.NS", "DIXON.NS", "CHOLAFIN.NS", "RELIANCE.NS", "TCS.NS",
     "BAJFINANCE.NS", "JSWSTEEL.NS", "SUZLON.NS", "RPOWER.NS",
@@ -37,7 +30,6 @@ def send_telegram_alert(message):
         print(f"Telegram Error: {e}")
 
 def get_atm_strike(symbol, price):
-    """Calculates ATM strike price for index options (Zero-to-Hero setup)"""
     if symbol == "^NSEI":  
         atm = round(price / 50) * 50
         return f"Nifty {atm}"
@@ -61,7 +53,21 @@ def analyze_stock(symbol):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # 1. Technical Indicators (EMA & RSI)
+        # Prevent duplicate alerts by ensuring the signal is from the absolute latest candle
+        last_candle_time = df.index[-1]
+        now_utc = datetime.now(timezone.utc)
+        
+        # Convert pandas timestamp to UTC for comparison if timezone aware
+        if hasattr(last_candle_time, 'tzinfo') and last_candle_time.tzinfo:
+            time_diff = (now_utc - last_candle_time).total_seconds() / 60
+        else:
+            time_diff = 30 # fallback if naive
+
+        # If the latest candle is older than 45 minutes, ignore it to prevent old triggers
+        if time_diff > 45:
+            return
+
+        # Technical Indicators
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
@@ -73,7 +79,6 @@ def analyze_stock(symbol):
 
         df['ATR'] = (df['High'] - df['Low']).rolling(window=14).mean()
         
-        # 2. Volume & Gamma Blast Parameters
         df['Volume'] = df['Volume'].fillna(0)
         df['Vol_SMA'] = df['Volume'].rolling(window=20).mean().fillna(1)
 
@@ -83,13 +88,12 @@ def analyze_stock(symbol):
 
         curr = df.iloc[-1]
         prev = df.iloc[-2]
+        prev2 = df.iloc[-3] # To check if signal already fired on previous bar
 
-        # 3. Strategy Conditions
         bull_crossover = (prev['EMA20'] <= prev['EMA50']) and (curr['EMA20'] > curr['EMA50'])
         bull_momentum = (curr['RSI'] > 50) and (curr['RSI'] < 75)
         bull_trend = curr['Close'] > curr['VWAP']
 
-        # Gamma Blast condition for explosive moves
         is_volume_data_valid = curr['Volume'] > 0
         is_gamma_blast = is_volume_data_valid and (curr['Volume'] > (curr['Vol_SMA'] * 2.0)) and ((curr['High'] - curr['Low']) > (curr['ATR'] * 1.4))
 
@@ -97,11 +101,14 @@ def analyze_stock(symbol):
         bear_momentum = (curr['RSI'] < 50) and (curr['RSI'] > 25)
         bear_trend = curr['Close'] < curr['VWAP']
 
+        # Prevent re-triggering if the previous bar also triggered the exact same crossover setup
+        was_bull_previously = (prev2['EMA20'] <= prev2['EMA50']) and (prev['EMA20'] > prev['EMA50'])
+        was_bear_previously = (prev2['EMA20'] >= prev2['EMA50']) and (prev['EMA20'] < prev['EMA50'])
+
         price = round(float(curr['Close']), 2)
         atr_val = float(curr['ATR'])
         rsi_val = round(float(curr['RSI']), 2)
 
-        # Asset Friendly Names
         display_name = symbol
         if symbol == "GC=F": display_name = "XAU/USD (Gold)"
         elif symbol == "SI=F": display_name = "XAG/USD (Silver)"
@@ -110,8 +117,11 @@ def analyze_stock(symbol):
         elif symbol == "^BSESN": display_name = "SENSEX"
         elif symbol == "^CNXFIN": display_name = "FINNIFTY"
 
-        # --- BUY SIGNAL / CALL OPTION (GAMMA BLAST + CONFLUENCE) ---
-        if (bull_crossover and bull_momentum and bull_trend) or (is_gamma_blast and bull_trend) or (symbol in ["GC=F", "SI=F"] and bull_crossover):
+        # --- BUY SIGNAL (Only trigger on fresh crossover/blast, not repetitive bars) ---
+        if ((bull_crossover and bull_momentum and bull_trend and not was_bull_previously) or 
+            (is_gamma_blast and bull_trend) or 
+            (symbol in ["GC=F", "SI=F"] and bull_crossover and not was_bull_previously)):
+            
             sl = round(float(price - (atr_val * 1.5)), 2)
             tp1 = round(float(price + (atr_val * 1.5)), 2)
             tp2 = round(float(price + (atr_val * 3.0)), 2)
@@ -139,8 +149,10 @@ def analyze_stock(symbol):
             print(msg)
             send_telegram_alert(msg)
 
-        # --- SELL SIGNAL / PUT OPTION ---
-        elif (bear_crossover and bear_momentum and bear_trend) or (is_gamma_blast and bear_trend) or (symbol in ["GC=F", "SI=F"] and bear_crossover):
+        # --- SELL SIGNAL ---
+        elif ((bear_crossover and bear_momentum and bear_trend and not was_bear_previously) or 
+              (symbol in ["GC=F", "SI=F"] and bear_crossover and not was_bear_previously)):
+            
             sl = round(float(price + (atr_val * 1.5)), 2)
             tp1 = round(float(price - (atr_val * 1.5)), 2)
             tp2 = round(float(price - (atr_val * 3.0)), 2)
@@ -172,7 +184,7 @@ def analyze_stock(symbol):
         print(f"Error analyzing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Running Ultimate Gamma Blast & Options Scanner...")
+    print("🚀 Running Anti-Spam Optimized Scanner...")
     for symbol in WATCHLIST:
         analyze_stock(symbol)
-    print("Scan cycle completed successfully.")
+    print("Scan completed.")
