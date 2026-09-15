@@ -5,7 +5,6 @@ import os
 from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-# Aap aur aapke friend ki chat IDs
 TELEGRAM_CHAT_IDS = ["5608017991", "5643531288"]
 
 WATCHLIST = [
@@ -25,7 +24,9 @@ def send_telegram_alert(message):
             "parse_mode": "Markdown"
         }
         try:
-            requests.post(url, json=payload)
+            response = requests.post(url, json=payload)
+            if response.status_code != 200:
+                print(f"Failed to send to {chat_id}: {response.text}")
         except Exception as e:
             print(f"Telegram Error for {chat_id}: {e}")
 
@@ -46,14 +47,16 @@ def get_atm_strike(symbol, price):
 
 def analyze_stock(symbol):
     try:
+        print(f"Analyzing {symbol}...")
         df = yf.download(symbol, period="3d", interval="15m", progress=False)
         if df.empty or len(df) < 50:
+            print(f"-> Not enough data for {symbol}")
             return
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # Fresh Candle Check (Strictly latest 35 mins to avoid old/repeat spam)
+        # Fresh Candle Check (Last 45 minutes to ensure it catches active setups)
         last_candle_time = df.index[-1]
         now_utc = datetime.now(timezone.utc)
         if hasattr(last_candle_time, 'tzinfo') and last_candle_time.tzinfo:
@@ -61,21 +64,22 @@ def analyze_stock(symbol):
         else:
             time_diff = 20
 
-        if time_diff > 35:
+        if time_diff > 45:
+            print(f"-> Candle too old for {symbol} (Diff: {time_diff:.1f} mins)")
             return
 
         # --- EXACT PINE SCRIPT INDICATOR CALCULATIONS ---
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
-        # RSI 14 Calculation
+        # RSI 14
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
 
-        # ATR 14 Calculation
+        # ATR 14
         high_low = df['High'] - df['Low']
         high_close = (df['High'] - df['Close'].shift()).abs()
         low_close = (df['Low'] - df['Close'].shift()).abs()
@@ -90,6 +94,8 @@ def analyze_stock(symbol):
         atr_val = float(curr['ATR'])
         rsi_val = round(float(curr['RSI']), 2)
 
+        print(f"-> {symbol} | Price: {price} | RSI: {rsi_val}")
+
         display_name = symbol
         if symbol == "XAUUSD=X": display_name = "XAU/USD (Gold Spot)"
         elif symbol == "CL=F": display_name = "CRUDE OIL (CL=F)"
@@ -98,18 +104,16 @@ def analyze_stock(symbol):
         elif symbol == "^BSESN": display_name = "SENSEX"
         elif symbol == "^CNXFIN": display_name = "FINNIFTY"
 
-        # --- PINE SCRIPT EXACT BUY / SELL SIGNALS ---
+        # --- SIGNALS ---
         bull_momentum = rsi_val > 50
         bear_momentum = rsi_val < 50
 
         buy_signal = (prev['EMA20'] <= prev['EMA50']) and (curr['EMA20'] > curr['EMA50']) and bull_momentum
         sell_signal = (prev['EMA20'] >= prev['EMA50']) and (curr['EMA20'] < curr['EMA50']) and bear_momentum
 
-        # Prevent duplicate firing on the same candle sequence
         was_buy_earlier = (prev2['EMA20'] <= prev2['EMA50']) and (prev['EMA20'] > prev['EMA50'])
         was_sell_earlier = (prev2['EMA20'] >= prev2['EMA50']) and (prev['EMA20'] < prev['EMA50'])
 
-        # --- BUY SETUP (Matching Pine Script inputs: slATR=1.5, rr1=1.0, rr2=2.0, rr3=3.0) ---
         if buy_signal and not was_buy_earlier:
             entry = price
             sl = round(entry - (atr_val * 1.5), 2)
@@ -132,10 +136,9 @@ def analyze_stock(symbol):
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📊 **Metrics:** RSI: `{rsi_val}` | ATR: `{round(atr_val, 2)}`"
             )
-            print(msg)
+            print(f">>> Sending BUY alert for {symbol} <<<")
             send_telegram_alert(msg)
 
-        # --- SELL SETUP ---
         elif sell_signal and not was_sell_earlier:
             entry = price
             sl = round(entry + (atr_val * 1.5), 2)
@@ -158,14 +161,14 @@ def analyze_stock(symbol):
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📊 **Metrics:** RSI: `{rsi_val}` | ATR: `{round(atr_val, 2)}`"
             )
-            print(msg)
+            print(f">>> Sending SELL alert for {symbol} <<<")
             send_telegram_alert(msg)
 
     except Exception as e:
         print(f"Error analyzing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Running Exact Pine Script Indicator Scanner...")
+    print("🚀 Running Upgraded Multi-Recipient Debug Scanner...")
     for symbol in WATCHLIST:
         analyze_stock(symbol)
     print("Scan cycle completed.")
