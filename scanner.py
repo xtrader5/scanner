@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_IDS = ["5608017991", "5643531288"]
 
+# Aapki poori watchlist (Gold Spot, Crude, Crypto, Indices & Stocks)
 WATCHLIST = [
     "XAUUSD=X", "CL=F", "NG=F", "BTC-USD",
     "^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN",
@@ -47,16 +48,15 @@ def get_atm_strike(symbol, price):
 
 def analyze_stock(symbol):
     try:
-        print(f"Analyzing {symbol}...")
+        print(f"Checking {symbol}...")
         df = yf.download(symbol, period="3d", interval="15m", progress=False)
         if df.empty or len(df) < 50:
-            print(f"-> Not enough data for {symbol}")
             return
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # Fresh Candle Check (Last 45 minutes to ensure it catches active setups)
+        # Fresh Candle Check (Strictly latest 40 mins to grab live triggers)
         last_candle_time = df.index[-1]
         now_utc = datetime.now(timezone.utc)
         if hasattr(last_candle_time, 'tzinfo') and last_candle_time.tzinfo:
@@ -64,22 +64,21 @@ def analyze_stock(symbol):
         else:
             time_diff = 20
 
-        if time_diff > 45:
-            print(f"-> Candle too old for {symbol} (Diff: {time_diff:.1f} mins)")
+        if time_diff > 40:
             return
 
-        # --- EXACT PINE SCRIPT INDICATOR CALCULATIONS ---
+        # --- EXACT PINE SCRIPT MATH CALCULATIONS ---
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
-        # RSI 14
+        # RSI 14 Calculation
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
 
-        # ATR 14
+        # ATR 14 Calculation
         high_low = df['High'] - df['Low']
         high_close = (df['High'] - df['Close'].shift()).abs()
         low_close = (df['Low'] - df['Close'].shift()).abs()
@@ -94,8 +93,6 @@ def analyze_stock(symbol):
         atr_val = float(curr['ATR'])
         rsi_val = round(float(curr['RSI']), 2)
 
-        print(f"-> {symbol} | Price: {price} | RSI: {rsi_val}")
-
         display_name = symbol
         if symbol == "XAUUSD=X": display_name = "XAU/USD (Gold Spot)"
         elif symbol == "CL=F": display_name = "CRUDE OIL (CL=F)"
@@ -104,16 +101,18 @@ def analyze_stock(symbol):
         elif symbol == "^BSESN": display_name = "SENSEX"
         elif symbol == "^CNXFIN": display_name = "FINNIFTY"
 
-        # --- SIGNALS ---
+        # --- PINE SCRIPT EXACT BUY / SELL CONDITIONS ---
         bull_momentum = rsi_val > 50
         bear_momentum = rsi_val < 50
 
         buy_signal = (prev['EMA20'] <= prev['EMA50']) and (curr['EMA20'] > curr['EMA50']) and bull_momentum
         sell_signal = (prev['EMA20'] >= prev['EMA50']) and (curr['EMA20'] < curr['EMA50']) and bear_momentum
 
+        # Anti-spam check to prevent duplicate firing on the same bar
         was_buy_earlier = (prev2['EMA20'] <= prev2['EMA50']) and (prev['EMA20'] > prev['EMA50'])
         was_sell_earlier = (prev2['EMA20'] >= prev2['EMA50']) and (prev['EMA20'] < prev['EMA50'])
 
+        # --- BUY SETUP (ATR 1.5x SL, RR 1.0, 2.0, 3.0) ---
         if buy_signal and not was_buy_earlier:
             entry = price
             sl = round(entry - (atr_val * 1.5), 2)
@@ -125,7 +124,7 @@ def analyze_stock(symbol):
             option_info = f"\n💡 **Zero-to-Hero Option:** `{get_atm_strike(symbol, price)} CE`" if symbol in ["^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN"] else ""
 
             msg = (
-                f"🟢 **BUY SIGNAL (Indicator Aligned)**\n"
+                f"🟢 **BUY SIGNAL (Indicator Matched)**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📌 **Asset:** `{display_name}`{option_info}\n"
                 f"💵 **Entry Price:** `{entry}`\n"
@@ -139,6 +138,7 @@ def analyze_stock(symbol):
             print(f">>> Sending BUY alert for {symbol} <<<")
             send_telegram_alert(msg)
 
+        # --- SELL SETUP ---
         elif sell_signal and not was_sell_earlier:
             entry = price
             sl = round(entry + (atr_val * 1.5), 2)
@@ -150,7 +150,7 @@ def analyze_stock(symbol):
             option_info = f"\n💡 **Zero-to-Hero Option:** `{get_atm_strike(symbol, price)} PE`" if symbol in ["^NSEI", "^NSEBANK", "^BSESN", "^CNXFIN"] else ""
 
             msg = (
-                f"🔴 **SELL SIGNAL (Indicator Aligned)**\n"
+                f"🔴 **SELL SIGNAL (Indicator Matched)**\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📌 **Asset:** `{display_name}`{option_info}\n"
                 f"💵 **Entry Price:** `{entry}`\n"
@@ -168,7 +168,7 @@ def analyze_stock(symbol):
         print(f"Error analyzing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Running Upgraded Multi-Recipient Debug Scanner...")
+    print("🚀 Running Exact Pine Script Aligned Scanner...")
     for symbol in WATCHLIST:
         analyze_stock(symbol)
     print("Scan cycle completed.")
